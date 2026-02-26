@@ -114,6 +114,41 @@ const runWithConcurrency = async (items, concurrency, worker) => {
   return results;
 };
 
+const fetchAllChannels = async (client, pageSize = 1000) => {
+  const parsedPageSize = Number(pageSize);
+  const safePageSize = Number.isFinite(parsedPageSize) && parsedPageSize > 0
+    ? Math.max(1, Math.min(1000, Math.floor(parsedPageSize)))
+    : 1000;
+
+  const firstPage = await client.getChannels(1, safePageSize);
+  if (!firstPage.success) {
+    return firstPage;
+  }
+
+  let channels = Array.isArray(firstPage.data) ? firstPage.data : [];
+  const total = Number(firstPage.total) || channels.length;
+
+  if (total > channels.length) {
+    const totalPages = Math.ceil(total / safePageSize);
+    for (let page = 2; page <= totalPages; page += 1) {
+      const pageResult = await client.getChannels(page, safePageSize);
+      if (!pageResult.success) {
+        return pageResult;
+      }
+      if (Array.isArray(pageResult.data)) {
+        channels = channels.concat(pageResult.data);
+      }
+    }
+  }
+
+  return {
+    success: true,
+    data: channels,
+    total: channels.length,
+    page: 1
+  };
+};
+
 const collectChannelIds = async (context, channelIds) => {
   if (Array.isArray(channelIds) && channelIds.length > 0) {
     return Array.from(new Set(channelIds.map(id => String(id)).filter(Boolean)));
@@ -126,25 +161,12 @@ const collectChannelIds = async (context, channelIds) => {
     authHeaderType: context.authHeaderType
   });
 
-  const pageSize = 1000;
-  const firstPage = await client.getChannels(1, pageSize);
-  if (!firstPage.success) {
-    throw new Error(`Failed to fetch channels: ${firstPage.message}`);
+  const channelsResult = await fetchAllChannels(client, 1000);
+  if (!channelsResult.success) {
+    throw new Error(`Failed to fetch channels: ${channelsResult.message}`);
   }
 
-  let channels = Array.isArray(firstPage.data) ? firstPage.data : [];
-  const total = Number(firstPage.total) || channels.length;
-
-  if (total > channels.length) {
-    const totalPages = Math.ceil(total / pageSize);
-    for (let page = 2; page <= totalPages; page += 1) {
-      const pageResult = await client.getChannels(page, pageSize);
-      if (pageResult.success && Array.isArray(pageResult.data)) {
-        channels = channels.concat(pageResult.data);
-      }
-    }
-  }
-
+  const channels = Array.isArray(channelsResult.data) ? channelsResult.data : [];
   return Array.from(new Set(channels.map(ch => String(ch.id)).filter(Boolean)));
 };
 
@@ -268,7 +290,8 @@ app.get('/api/channel/', async (req, res) => {
     }
     
     const client = new NewAPIClient({ baseUrl, token, userId, authHeaderType });
-    const result = await client.getChannels();
+    const requestedPageSize = req.query.pageSize || req.query.page_size;
+    const result = await fetchAllChannels(client, requestedPageSize || 1000);
     res.json(result);
   } catch (error) {
     res.status(500).json({ success: false, message: '获取渠道失败', error: error.message });
@@ -352,12 +375,12 @@ app.post('/api/test-connection', async (req, res) => {
 // Channels list
 app.post('/api/channels', async (req, res) => {
   try {
-    const { baseUrl, token, userId, authHeaderType } = req.body;
+    const { baseUrl, token, userId, authHeaderType, pageSize } = req.body;
     if (!baseUrl || !token || !userId) {
       return res.status(400).json({ success: false, message: '请填写完整的配置信息' });
     }
     const client = new NewAPIClient({ baseUrl, token, userId, authHeaderType });
-    const result = await client.getChannels();
+    const result = await fetchAllChannels(client, pageSize || 1000);
     res.json(result);
   } catch (error) {
     res.status(500).json({ success: false, message: '获取渠道失败', error: error.message });
